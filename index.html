@@ -149,10 +149,9 @@
   }
 
   // ---- Input: slide to steer, hold to boost, rapid-tap for SUPER hop ----
-  const pointers = new Map();
+  const pointers = new Map();          // id -> last field x (for relative-swipe steering)
   const keys = { left:false, right:false, up:false };
   const toFieldX = cx => (cx - offX) / scale;
-  const lastPointerX = () => { let v=null; for (const x of pointers.values()) v=x; return v; };
 
   function registerTap() {
     if (state !== 'play') { reset(); return; }
@@ -172,7 +171,12 @@
     pointers.set(e.pointerId, toFieldX(e.clientX));
     registerTap();
   });
-  cv.addEventListener('pointermove', e => { if (pointers.has(e.pointerId)) pointers.set(e.pointerId, toFieldX(e.clientX)); });
+  cv.addEventListener('pointermove', e => {
+    if (!pointers.has(e.pointerId)) return;
+    const x = toFieldX(e.clientX), prev = pointers.get(e.pointerId);
+    if (state === 'play') dino.tx += (x - prev);   // relative: dino moves only by how far you swipe sideways
+    pointers.set(e.pointerId, x);
+  });
   cv.addEventListener('pointerup',     e => pointers.delete(e.pointerId));
   cv.addEventListener('pointercancel', e => pointers.delete(e.pointerId));
 
@@ -206,10 +210,8 @@
     if (state !== 'play') { sparks.forEach(s=>{ s.x+=s.vx; s.y+=s.vy; s.vy+=0.12; s.life-=0.02; }); sparks=sparks.filter(s=>s.life>0); return; }
     const elapsed = (performance.now() - startT) / 1000;
 
-    // steering
-    const px = lastPointerX();
-    if (px !== null) dino.tx = px;
-    else dino.tx += ((keys.right?1:0) - (keys.left?1:0)) * 9;
+    // steering: touch swipes adjust dino.tx in pointermove; keyboard nudges it here
+    if (pointers.size === 0) dino.tx += ((keys.right?1:0) - (keys.left?1:0)) * 9;
     dino.tx = Math.max(MARGIN, Math.min(W-MARGIN, dino.tx));
     const dx = dino.tx - dino.x;
     dino.x += dx * 0.22;
