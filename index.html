@@ -48,7 +48,7 @@
   </div>
   <button id="reset">↺ Reset</button>
   <div id="toast"></div>
-  <div id="hint">Slide to steer · hold to jump higher · tap FAST for a SUPER hop · don't fall behind!</div>
+  <div id="hint">Slide to steer · tap to jump · tap FAST for a SUPER hop · don't fall behind!</div>
 
 <script>
 (() => {
@@ -103,8 +103,7 @@
   const MARGIN = 30;
   const DINO_W = 38, DINO_H = 46, FOOT = DINO_H/2;
   const G = 0.42;                             // gravity
-  const BOUNCE = 13.6;                        // auto-bounce off a platform
-  const BOOST = 0.55, BOOST_CAP = -19;        // press/hold adds upward force
+  const JUMP = 13.8;                          // discrete jump impulse (press to hop)
   const SUPER = 25;                           // rapid-tap SUPER hop launch velocity
   const PLAT_W = 102, PLAT_H = 20;
   const N_PLATS = 36;                          // platforms up to the castle
@@ -141,7 +140,7 @@
     y -= 210;
     plats.push({ x: W/2, y, w: W - 60, goal: true });             // castle goal
 
-    dino = { x: W/2, y: START_Y - FOOT, vx: 0, vy: 0, tx: W/2, face: 1, squash: 0, spin: 0 };
+    dino = { x: W/2, y: START_Y - FOOT, vx: 0, vy: 0, tx: W/2, face: 1, squash: 0, spin: 0, ground: plats[0] };
     camTop = dino.y - H*0.55;
 
     scoreEl.textContent = 0;
@@ -154,16 +153,17 @@
   const keys = { left:false, right:false, up:false };
   const toFieldX = cx => (cx - offX) / scale;
   const lastPointerX = () => { let v=null; for (const x of pointers.values()) v=x; return v; };
-  const holding = () => pointers.size > 0 || keys.up;
 
   function registerTap() {
     if (state !== 'play') { reset(); return; }
     const now = performance.now();
+    // normal jump: only when standing on a platform (no mid-air flying)
+    if (dino.ground) { dino.vy = -JUMP; dino.ground = null; dino.squash = 1; }
     tapTimes.push(now);
     tapTimes = tapTimes.filter(t => now - t < 650);
     if (tapTimes.length >= 4 && special <= 0 && specialCD <= 0) {
       special = 50; specialCD = 80; tapTimes = [];
-      dino.vy = -SUPER; dino.spin = 0.001;
+      dino.vy = -SUPER; dino.ground = null; dino.spin = 0.001;
       shake = 10;
       for (let i=0;i<26;i++) sparks.push(mkSpark(dino.x, dino.y, true));
       showToast('✨ SUPER HOP!');
@@ -217,25 +217,27 @@
     dino.x += dx * 0.22;
     if (Math.abs(dx) > 1.5) dino.face = dx > 0 ? 1 : -1;
 
-    // gravity + hold-boost
-    dino.vy += G;
-    if (holding() && dino.vy < 0) dino.vy = Math.max(BOOST_CAP, dino.vy - BOOST);
-    const prevFoot = dino.y + FOOT;
-    dino.y += dino.vy;
-    const foot = dino.y + FOOT;
-
-    // land on a platform (only while falling)
-    if (dino.vy > 0) {
-      for (const p of plats) {
-        if (prevFoot <= p.y + 2 && foot >= p.y && Math.abs(dino.x - p.x) < p.w/2 + 8) {
-          dino.y = p.y - FOOT; dino.vy = -BOUNCE; dino.squash = 1;
-          if (p.goal) {
-            state = 'won';
-            for (let i=0;i<40;i++) sparks.push(mkSpark(dino.x, dino.y, true));
-            const t = ((performance.now()-startT)/1000).toFixed(1);
-            showToast('🏰 SUMMIT!\n'+t+'s · 🪙'+score, true);
+    // movement: ride the platform you stand on, or fall under gravity (no flying)
+    if (dino.ground) {
+      dino.y = dino.ground.y - FOOT; dino.vy = 0;
+      if (Math.abs(dino.x - dino.ground.x) > dino.ground.w/2 + 6) dino.ground = null;  // walked off the edge
+    } else {
+      dino.vy += G;
+      const prevFoot = dino.y + FOOT;
+      dino.y += dino.vy;
+      const foot = dino.y + FOOT;
+      if (dino.vy > 0) {                          // land only while falling
+        for (const p of plats) {
+          if (prevFoot <= p.y + 2 && foot >= p.y && Math.abs(dino.x - p.x) < p.w/2 + 8) {
+            dino.y = p.y - FOOT; dino.vy = 0; dino.ground = p; dino.squash = 1;
+            if (p.goal) {
+              state = 'won';
+              for (let i=0;i<40;i++) sparks.push(mkSpark(dino.x, dino.y, true));
+              const t = ((performance.now()-startT)/1000).toFixed(1);
+              showToast('🏰 SUMMIT!\n'+t+'s · 🪙'+score, true);
+            }
+            break;
           }
-          break;
         }
       }
     }
