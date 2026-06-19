@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#7ec6ef" />
+<title>Dino Rush</title>
+<style>
+  :root { --ui: #fffaf0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; overflow: hidden; background: #5fb3e6;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--ui); touch-action: none; user-select: none; -webkit-user-select: none;
+  }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #game { display: block; touch-action: none; border-radius: 14px; box-shadow: 0 0 70px rgba(0,0,0,.5); }
+  #hud {
+    position: fixed; top: env(safe-area-inset-top, 8px); left: 0; right: 0;
+    display: flex; justify-content: space-between; padding: 10px 16px;
+    font-weight: 800; font-size: 15px; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,.45);
+  }
+  #hud .pill { background: rgba(0,0,0,.30); padding: 6px 12px; border-radius: 20px; }
+  #toast {
+    position: fixed; top: 40%; left: 50%; transform: translate(-50%,-50%);
+    font-size: 30px; font-weight: 900; opacity: 0; transition: opacity .2s;
+    text-shadow: 0 2px 8px rgba(0,0,0,.6); pointer-events: none; text-align: center; white-space: pre;
+  }
+  #hint {
+    position: fixed; bottom: calc(env(safe-area-inset-bottom, 10px) + 8px); left: 0; right: 0;
+    text-align: center; font-size: 12px; opacity: .65; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,.5);
+  }
+  #reset {
+    position: fixed; top: env(safe-area-inset-top, 8px); left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,.30); border: 0; color: var(--ui); font-weight: 800;
+    padding: 6px 14px; border-radius: 20px; font-size: 13px; pointer-events: auto;
+  }
+</style>
+</head>
+<body>
+  <div id="wrap"><canvas id="game"></canvas></div>
+  <div id="hud">
+    <div class="pill">🪙 <span id="score">0</span></div>
+    <div class="pill">⏱ <span id="time">0.0</span>s</div>
+  </div>
+  <button id="reset">↺ Reset</button>
+  <div id="toast"></div>
+  <div id="hint">Slide to steer · hold to jump higher · tap FAST for a SUPER hop · don't fall behind!</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+  // Polyfill for older iOS Safari (roundRect added in Safari 16)
+  if (!ctx.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r){
+      r = Math.min(r, Math.abs(w)/2, Math.abs(h)/2);
+      this.moveTo(x+r,y); this.arcTo(x+w,y,x+w,y+h,r); this.arcTo(x+w,y+h,x,y+h,r);
+      this.arcTo(x,y+h,x,y,r); this.arcTo(x,y,x+w,y,r); this.closePath(); return this;
+    };
+  }
+  // Optional background image (drop a bg.png next to this file). Falls back to drawn sky.
+  const bgImg = new Image(); let bgReady = false;
+  bgImg.onload = () => { bgReady = true; };
+  bgImg.src = 'bg.png';
+
+  const scoreEl = document.getElementById('score');
+  const timeEl  = document.getElementById('time');
+  const toastEl = document.getElementById('toast');
+
+  const W = 430, H = 740;
+  let scale = 1, offX = 0, offY = 0;
+
+  function viewport() {
+    const vv = window.visualViewport;
+    const vw = (vv && vv.width)  || window.innerWidth  || document.documentElement.clientWidth  || screen.width;
+    const vh = (vv && vv.height) || window.innerHeight || document.documentElement.clientHeight || screen.height;
+    return { vw, vh };
+  }
+  function resize() {
+    const { vw, vh } = viewport();
+    if (!vw || !vh) return;                 // dimensions not ready yet (iOS preview webview)
+    scale = Math.min(vw / W, vh / H);
+    if (!isFinite(scale) || scale <= 0) return;
+    cv.style.width = (W*scale)+'px'; cv.style.height = (H*scale)+'px';
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(W*scale*dpr); cv.height = Math.round(H*scale*dpr);
+    ctx.setTransform(scale*dpr,0,0,scale*dpr,0,0);
+    const r = cv.getBoundingClientRect(); offX = r.left; offY = r.top;
+  }
+  addEventListener('resize', resize);
+  addEventListener('load', resize);
+  addEventListener('orientationchange', () => setTimeout(resize, 200));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+  // Retry a few times — some iOS webviews report 0-size until after first paint
+  [0, 50, 150, 400, 1000].forEach(d => setTimeout(resize, d));
+
+  // ---- Layout / tuning ----
+  const LANES = [W*0.24, W*0.5, W*0.76];     // 3 columns
+  const MARGIN = 30;
+  const DINO_W = 38, DINO_H = 46, FOOT = DINO_H/2;
+  const G = 0.42;                             // gravity
+  const BOUNCE = 13.6;                        // auto-bounce off a platform
+  const BOOST = 0.55, BOOST_CAP = -19;        // press/hold adds upward force
+  const SUPER = 25;                           // rapid-tap SUPER hop launch velocity
+  const PLAT_W = 102, PLAT_H = 20;
+  const N_PLATS = 36;                          // platforms up to the castle
+  const START_Y = H - 110;
+  const GRACE = 1.3;                           // seconds before the auto-scroll begins
+
+  let plats = [], rings = [], sparks = [], clouds = [];
+  let dino, camTop, score = 0, startT = 0, state = 'play';
+  let tapTimes = [], special = 0, specialCD = 0, shake = 0;
+
+  function buildClouds() {
+    clouds = [];
+    for (let i=0;i<60;i++) clouds.push({
+      x: Math.random()*W,
+      y: START_Y - Math.random()*(N_PLATS*150 + 800),
+      s: 0.6 + Math.random()*0.9
+    });
+  }
+
+  function reset() {
+    plats = []; rings = []; sparks = []; score = 0; state = 'play';
+    tapTimes = []; special = 0; specialCD = 0; shake = 0;
+    startT = performance.now();
+
+    plats.push({ x: W/2, y: START_Y, w: W - 40, goal: false });   // starting ground
+
+    let y = START_Y, lane = 1;
+    for (let i = 1; i <= N_PLATS; i++) {
+      y -= 112 + Math.random()*42;
+      lane = Math.max(0, Math.min(2, lane + [-1,-1,0,1,1][Math.floor(Math.random()*5)]));
+      plats.push({ x: LANES[lane], y, w: PLAT_W, goal: false });
+      if (Math.random() < 0.5) rings.push({ x: LANES[lane], y: y - 48, got: false });
+    }
+    y -= 210;
+    plats.push({ x: W/2, y, w: W - 60, goal: true });             // castle goal
+
+    dino = { x: W/2, y: START_Y - FOOT, vx: 0, vy: 0, tx: W/2, face: 1, squash: 0, spin: 0 };
+    camTop = dino.y - H*0.55;
+
+    scoreEl.textContent = 0;
+    buildClouds();
+    toastEl.style.opacity = 0;
+  }
+
+  // ---- Input: slide to steer, hold to boost, rapid-tap for SUPER hop ----
+  const pointers = new Map();
+  const keys = { left:false, right:false, up:false };
+  const toFieldX = cx => (cx - offX) / scale;
+  const lastPointerX = () => { let v=null; for (const x of pointers.values()) v=x; return v; };
+  const holding = () => pointers.size > 0 || keys.up;
+
+  function registerTap() {
+    if (state !== 'play') { reset(); return; }
+    const now = performance.now();
+    tapTimes.push(now);
+    tapTimes = tapTimes.filter(t => now - t < 650);
+    if (tapTimes.length >= 4 && special <= 0 && specialCD <= 0) {
+      special = 50; specialCD = 80; tapTimes = [];
+      dino.vy = -SUPER; dino.spin = 0.001;
+      shake = 10;
+      for (let i=0;i<26;i++) sparks.push(mkSpark(dino.x, dino.y, true));
+      showToast('✨ SUPER HOP!');
+    }
+  }
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault(); cv.setPointerCapture?.(e.pointerId);
+    pointers.set(e.pointerId, toFieldX(e.clientX));
+    registerTap();
+  });
+  cv.addEventListener('pointermove', e => { if (pointers.has(e.pointerId)) pointers.set(e.pointerId, toFieldX(e.clientX)); });
+  cv.addEventListener('pointerup',     e => pointers.delete(e.pointerId));
+  cv.addEventListener('pointercancel', e => pointers.delete(e.pointerId));
+
+  addEventListener('keydown', e => {
+    if (e.key==='ArrowLeft'||e.key==='a'||e.key==='A') keys.left = true;
+    if (e.key==='ArrowRight'||e.key==='d'||e.key==='D') keys.right = true;
+    if (e.key===' '||e.key==='ArrowUp'||e.key==='w'||e.key==='W') { if (!keys.up) registerTap(); keys.up = true; }
+  });
+  addEventListener('keyup', e => {
+    if (e.key==='ArrowLeft'||e.key==='a'||e.key==='A') keys.left = false;
+    if (e.key==='ArrowRight'||e.key==='d'||e.key==='D') keys.right = false;
+    if (e.key===' '||e.key==='ArrowUp'||e.key==='w'||e.key==='W') keys.up = false;
+  });
+  document.getElementById('reset').addEventListener('click', reset);
+
+  const showToast = (txt, hold) => {
+    toastEl.textContent = txt; toastEl.style.opacity = 1;
+    clearTimeout(showToast._t);
+    if (!hold) showToast._t = setTimeout(()=>toastEl.style.opacity=0, 1300);
+  };
+
+  const SPARK_COLORS = ['#ffd23f','#ff8a3d','#5fd0ff','#ff5fa8','#aef27a','#ffffff'];
+  function mkSpark(x,y,burst){
+    const a = Math.random()*7, sp = burst ? 2+Math.random()*5 : 0.5+Math.random()*1.5;
+    return { x, y, vx: Math.cos(a)*sp, vy: Math.sin(a)*sp - (burst?1:0), life: 1,
+             r: 2+Math.random()*3, c: SPARK_COLORS[Math.floor(Math.random()*SPARK_COLORS.length)] };
+  }
+
+  // ---- Physics ----
+  function step() {
+    if (state !== 'play') { sparks.forEach(s=>{ s.x+=s.vx; s.y+=s.vy; s.vy+=0.12; s.life-=0.02; }); sparks=sparks.filter(s=>s.life>0); return; }
+    const elapsed = (performance.now() - startT) / 1000;
+
+    // steering
+    const px = lastPointerX();
+    if (px !== null) dino.tx = px;
+    else dino.tx += ((keys.right?1:0) - (keys.left?1:0)) * 9;
+    dino.tx = Math.max(MARGIN, Math.min(W-MARGIN, dino.tx));
+    const dx = dino.tx - dino.x;
+    dino.x += dx * 0.22;
+    if (Math.abs(dx) > 1.5) dino.face = dx > 0 ? 1 : -1;
+
+    // gravity + hold-boost
+    dino.vy += G;
+    if (holding() && dino.vy < 0) dino.vy = Math.max(BOOST_CAP, dino.vy - BOOST);
+    const prevFoot = dino.y + FOOT;
+    dino.y += dino.vy;
+    const foot = dino.y + FOOT;
+
+    // land on a platform (only while falling)
+    if (dino.vy > 0) {
+      for (const p of plats) {
+        if (prevFoot <= p.y + 2 && foot >= p.y && Math.abs(dino.x - p.x) < p.w/2 + 8) {
+          dino.y = p.y - FOOT; dino.vy = -BOUNCE; dino.squash = 1;
+          if (p.goal) {
+            state = 'won';
+            for (let i=0;i<40;i++) sparks.push(mkSpark(dino.x, dino.y, true));
+            const t = ((performance.now()-startT)/1000).toFixed(1);
+            showToast('🏰 SUMMIT!\n'+t+'s · 🪙'+score, true);
+          }
+          break;
+        }
+      }
+    }
+    dino.squash *= 0.85;
+
+    // special-hop state: spin + sparkle trail
+    if (special > 0) {
+      special--; dino.spin += 0.4;
+      if (special % 2 === 0) sparks.push(mkSpark(dino.x + (Math.random()*20-10), dino.y + (Math.random()*20-10), false));
+      if (special === 0) dino.spin = 0;
+    }
+    if (specialCD > 0) specialCD--;
+    sparks.forEach(s=>{ s.x+=s.vx; s.y+=s.vy; s.vy+=0.12; s.life-=0.02; });
+    sparks = sparks.filter(s=>s.life>0);
+
+    // collect rings
+    for (const r of rings) {
+      if (!r.got && Math.abs(dino.x - r.x) < 26 && Math.abs(dino.y - r.y) < 30) {
+        r.got = true; score++; scoreEl.textContent = score;
+        for (let i=0;i<6;i++) sparks.push(mkSpark(r.x, r.y, true));
+      }
+    }
+
+    // CAMERA: always scrolls up after the grace period (idle => you fall behind),
+    // and also follows the dino up if it climbs faster than the scroll.
+    const autoSpeed = elapsed < GRACE ? 0 : Math.min(2.6, 0.7 + (elapsed - GRACE) * 0.05);
+    camTop -= autoSpeed;
+    const follow = dino.y - H*0.55;
+    if (follow < camTop) camTop = follow;
+
+    if (shake > 0) shake *= 0.85;
+
+    // fall off the bottom => game over
+    if (dino.y - camTop > H + 50) {
+      state = 'dead';
+      showToast('💥 Left behind!\nTap to retry', true);
+    }
+
+    if (state === 'play') timeEl.textContent = elapsed.toFixed(1);
+  }
+
+  // ---- Rendering ----
+  function sky() {
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0.00,'#56b8ef'); g.addColorStop(0.55,'#8fd0f3'); g.addColorStop(1.00,'#c8ecfb');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+    ctx.save(); ctx.globalAlpha = 0.9;
+    const sg = ctx.createRadialGradient(W-70,90,8,W-70,90,90);
+    sg.addColorStop(0,'rgba(255,250,220,0.95)'); sg.addColorStop(1,'rgba(255,250,220,0)');
+    ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(W-70,90,90,0,7); ctx.fill(); ctx.restore();
+  }
+  function cloud(x,y,s) {
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.beginPath();
+    ctx.ellipse(x, y, 34*s, 18*s, 0, 0, 7);
+    ctx.ellipse(x-26*s, y+4*s, 22*s, 14*s, 0, 0, 7);
+    ctx.ellipse(x+26*s, y+4*s, 24*s, 15*s, 0, 0, 7);
+    ctx.fill();
+  }
+  function drawClouds() {
+    const par = camTop * 0.45;
+    for (const c of clouds) { const sy = c.y - par; if (sy > -40 && sy < H+40) cloud(c.x, sy, c.s); }
+  }
+  function platform(p) {
+    const sy = p.y - camTop;
+    if (sy < -60 || sy > H+60) return;
+    const x = p.x - p.w/2;
+    if (p.goal) drawCastle(p.x, sy);
+    ctx.fillStyle = '#9b6b3a'; ctx.beginPath(); ctx.roundRect(x, sy, p.w, PLAT_H+10, 8); ctx.fill();
+    ctx.fillStyle = '#7d5329'; ctx.beginPath(); ctx.roundRect(x, sy+PLAT_H, p.w, 10, 6); ctx.fill();
+    ctx.fillStyle = '#5fc24a'; ctx.beginPath(); ctx.roundRect(x, sy-4, p.w, PLAT_H, 8); ctx.fill();
+    ctx.fillStyle = '#76d65f'; ctx.beginPath(); ctx.roundRect(x, sy-4, p.w, 8, 8); ctx.fill();
+    ctx.fillStyle = '#5fc24a';
+    for (let gx = x+8; gx < x+p.w-6; gx += 14) { ctx.beginPath(); ctx.moveTo(gx, sy-2); ctx.lineTo(gx+4, sy-11); ctx.lineTo(gx+8, sy-2); ctx.fill(); }
+  }
+  function drawCastle(cx, sy) {
+    const cy = sy - 6;
+    ctx.fillStyle = '#eceff3';
+    ctx.fillRect(cx-46, cy-70, 92, 70);
+    ctx.fillRect(cx-62, cy-90, 24, 90);
+    ctx.fillRect(cx+38, cy-90, 24, 90);
+    ctx.fillStyle = '#d7dbe1';
+    for (let i=-1;i<=1;i++) ctx.fillRect(cx-12 + i*16, cy-82, 10, 10);
+    ctx.fillStyle = '#e0584f';
+    ctx.beginPath(); ctx.moveTo(cx-66, cy-90); ctx.lineTo(cx-50, cy-116); ctx.lineTo(cx-34, cy-90); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx+34, cy-90); ctx.lineTo(cx+50, cy-116); ctx.lineTo(cx+66, cy-90); ctx.fill();
+    ctx.fillStyle = '#6b4a8a'; ctx.beginPath(); ctx.roundRect(cx-12, cy-30, 24, 30, 12); ctx.fill();
+    ctx.strokeStyle = '#cfd3d8'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx-50, cy-116); ctx.lineTo(cx-50, cy-134); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx+50, cy-116); ctx.lineTo(cx+50, cy-134); ctx.stroke();
+    ctx.fillStyle = '#e0584f';
+    ctx.beginPath(); ctx.moveTo(cx-50, cy-134); ctx.lineTo(cx-34, cy-129); ctx.lineTo(cx-50, cy-124); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx+50, cy-134); ctx.lineTo(cx+66, cy-129); ctx.lineTo(cx+50, cy-124); ctx.fill();
+  }
+  function drawRing(r) {
+    if (r.got) return;
+    const sy = r.y - camTop; if (sy < -30 || sy > H+30) return;
+    ctx.save(); ctx.translate(r.x, sy);
+    const wob = Math.cos(performance.now()*0.004 + r.x);
+    ctx.scale(0.55 + 0.45*Math.abs(wob), 1);
+    ctx.lineWidth = 6; ctx.strokeStyle = '#e0a92a'; ctx.beginPath(); ctx.arc(0,0,13,0,7); ctx.stroke();
+    ctx.lineWidth = 6; ctx.strokeStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(0,0,13,Math.PI*1.0,Math.PI*1.7); ctx.stroke();
+    ctx.restore();
+  }
+  function drawSparks() {
+    for (const s of sparks) {
+      const sy = s.y - camTop;
+      ctx.globalAlpha = Math.max(0, s.life);
+      ctx.fillStyle = s.c;
+      ctx.beginPath(); ctx.arc(s.x, sy, s.r, 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+  function drawDino(sx, sy) {
+    const sq = dino.squash;
+    ctx.save();
+    ctx.translate(sx, sy);
+    if (dino.spin) ctx.rotate(dino.spin);
+    if (special > 0) {                          // glowing aura during SUPER hop
+      const ag = ctx.createRadialGradient(0,0,4,0,0,40);
+      ag.addColorStop(0,'rgba(255,235,120,0.55)'); ag.addColorStop(1,'rgba(255,235,120,0)');
+      ctx.fillStyle = ag; ctx.beginPath(); ctx.arc(0,0,40,0,7); ctx.fill();
+    }
+    ctx.scale(dino.face * (1 - sq*0.12), 1 + sq*0.18);
+    ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.beginPath(); ctx.ellipse(0, FOOT-2, 16, 5, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#3fae3f';
+    ctx.beginPath(); ctx.moveTo(-6,6); ctx.quadraticCurveTo(-24,8,-20,-6); ctx.quadraticCurveTo(-14,2,-6,-2); ctx.fill();
+    ctx.fillStyle = '#ef8a2b';
+    ctx.beginPath(); ctx.ellipse(-7, FOOT-4, 8, 5, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(8, FOOT-4, 8, 5, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#46be46'; ctx.beginPath(); ctx.ellipse(0, 6, 15, 17, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fdf6e3'; ctx.beginPath(); ctx.ellipse(2, 9, 9, 12, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#e0584f';
+    for (let i=0;i<3;i++){ ctx.beginPath(); ctx.moveTo(-12+i*2, -2+i*7); ctx.lineTo(-19, 1+i*7); ctx.lineTo(-12+i*2, 5+i*7); ctx.fill(); }
+    ctx.fillStyle = '#3fae3f'; ctx.beginPath(); ctx.ellipse(9, 6, 5, 7, 0.5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#46be46'; ctx.beginPath(); ctx.arc(4, -12, 13, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(13, -8, 7, 5, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#2f8f2f'; ctx.beginPath(); ctx.arc(16, -8, 1.4, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(6, -16, 5, 6, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#1b1b1b'; ctx.beginPath(); ctx.arc(8, -16, 2.4, 0, 7); ctx.fill();
+    ctx.fillStyle = '#e0584f'; ctx.beginPath(); ctx.moveTo(-4,-22); ctx.quadraticCurveTo(2,-34,8,-22); ctx.fill();
+    ctx.restore();
+  }
+  function dangerVignette() {
+    // warn when the dino is near the bottom edge (about to be left behind)
+    const d = (dino.y - camTop) / H;            // 0 top .. 1 bottom
+    if (d < 0.78) return;
+    const a = Math.min(0.5, (d - 0.78) / 0.22 * 0.5) * (0.6 + 0.4*Math.sin(performance.now()*0.02));
+    const g = ctx.createLinearGradient(0, H, 0, H-160);
+    g.addColorStop(0, `rgba(220,30,30,${a})`); g.addColorStop(1, 'rgba(220,30,30,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, H-160, W, 160);
+  }
+
+  function frame() {
+    if (cv.width <= 300) resize();
+    step();
+    ctx.save();
+    if (shake > 0.4) ctx.translate((Math.random()-.5)*shake, (Math.random()-.5)*shake);
+    sky();
+    if (bgReady) { ctx.save(); ctx.globalAlpha = 0.18; const s = W/bgImg.naturalWidth; ctx.drawImage(bgImg, 0, H - bgImg.naturalHeight*s, W, bgImg.naturalHeight*s); ctx.restore(); }
+    drawClouds();
+    for (const p of plats) platform(p);
+    for (const r of rings) drawRing(r);
+    drawSparks();
+    if (state !== 'dead') drawDino(dino.x, dino.y - camTop);
+    if (state === 'play') dangerVignette();
+    ctx.restore();
+    requestAnimationFrame(frame);
+  }
+
+  resize(); reset(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
