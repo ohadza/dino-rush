@@ -134,8 +134,9 @@
     for (let i = 1; i <= N_PLATS; i++) {
       y -= 112 + Math.random()*42;
       lane = Math.max(0, Math.min(2, lane + [-1,-1,0,1,1][Math.floor(Math.random()*5)]));
-      plats.push({ x: LANES[lane], y, w: PLAT_W, goal: false });
-      if (Math.random() < 0.5) rings.push({ x: LANES[lane], y: y - 48, got: false });
+      const w = [68, 92, 92, 118, 148][Math.floor(Math.random()*5)];   // varied hill widths: small..large
+      plats.push({ x: LANES[lane], y, w, goal: false });
+      if (Math.random() < 0.5) rings.push({ x: LANES[lane], y: y - 50, got: false });
     }
     y -= 210;
     plats.push({ x: W/2, y, w: W - 60, goal: true });             // castle goal
@@ -277,36 +278,74 @@
   // ---- Rendering ----
   function sky() {
     const g = ctx.createLinearGradient(0,0,0,H);
-    g.addColorStop(0.00,'#56b8ef'); g.addColorStop(0.55,'#8fd0f3'); g.addColorStop(1.00,'#c8ecfb');
+    g.addColorStop(0.00,'#3aa6ef'); g.addColorStop(0.45,'#6ec3f2'); g.addColorStop(0.80,'#a6dcf7'); g.addColorStop(1.00,'#d6f1fb');
     ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
     ctx.save(); ctx.globalAlpha = 0.9;
     const sg = ctx.createRadialGradient(W-70,90,8,W-70,90,90);
     sg.addColorStop(0,'rgba(255,250,220,0.95)'); sg.addColorStop(1,'rgba(255,250,220,0)');
     ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(W-70,90,90,0,7); ctx.fill(); ctx.restore();
   }
-  function cloud(x,y,s) {
-    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  function farScenery() {
+    // distant mountains + rolling hills behind the floating platforms; slow parallax,
+    // slides down and away as you climb up into the sky
+    const base = (START_Y + 70) - camTop * 0.4;
+    if (base < -60 || base > H + 280) return;
+    const hump = (cx, topY, w) => { ctx.beginPath(); ctx.moveTo(cx-w/2, base+40);
+      ctx.quadraticCurveTo(cx, topY, cx+w/2, base+40); ctx.closePath(); ctx.fill(); };
+    ctx.fillStyle = 'rgba(150,190,214,0.50)';                 // far hazy mountains
+    hump(70, base-170, 240); hump(330, base-205, 280);
+    ctx.fillStyle = 'rgba(108,196,84,0.60)';                  // near rolling green hills
+    hump(30, base-80, 230); hump(250, base-110, 300); hump(430, base-70, 230);
+  }
+  function cloudBlob(x,y,s){
     ctx.beginPath();
-    ctx.ellipse(x, y, 34*s, 18*s, 0, 0, 7);
-    ctx.ellipse(x-26*s, y+4*s, 22*s, 14*s, 0, 0, 7);
-    ctx.ellipse(x+26*s, y+4*s, 24*s, 15*s, 0, 0, 7);
+    ctx.ellipse(x, y, 34*s, 17*s, 0, 0, 7);
+    ctx.ellipse(x-24*s, y+5*s, 20*s, 13*s, 0, 0, 7);
+    ctx.ellipse(x+24*s, y+5*s, 22*s, 14*s, 0, 0, 7);
+    ctx.ellipse(x-3*s, y-9*s, 17*s, 13*s, 0, 0, 7);
     ctx.fill();
+  }
+  function cloud(x,y,s) {
+    ctx.fillStyle = 'rgba(196,220,238,0.95)'; cloudBlob(x, y+3*s, s);      // soft shaded underside
+    ctx.fillStyle = '#ffffff';                cloudBlob(x, y, s*0.96);     // bright rounded top
   }
   function drawClouds() {
     const par = camTop * 0.45;
-    for (const c of clouds) { const sy = c.y - par; if (sy > -40 && sy < H+40) cloud(c.x, sy, c.s); }
+    for (const c of clouds) { const sy = c.y - par; if (sy > -50 && sy < H+50) cloud(c.x, sy, c.s); }
   }
   function platform(p) {
     const sy = p.y - camTop;
-    if (sy < -60 || sy > H+60) return;
-    const x = p.x - p.w/2;
+    if (sy < -80 || sy > H+80) return;
+    const w = p.w, x = p.x - w/2, dirtH = 30;
     if (p.goal) drawCastle(p.x, sy);
-    ctx.fillStyle = '#9b6b3a'; ctx.beginPath(); ctx.roundRect(x, sy, p.w, PLAT_H+10, 8); ctx.fill();
-    ctx.fillStyle = '#7d5329'; ctx.beginPath(); ctx.roundRect(x, sy+PLAT_H, p.w, 10, 6); ctx.fill();
-    ctx.fillStyle = '#5fc24a'; ctx.beginPath(); ctx.roundRect(x, sy-4, p.w, PLAT_H, 8); ctx.fill();
-    ctx.fillStyle = '#76d65f'; ctx.beginPath(); ctx.roundRect(x, sy-4, p.w, 8, 8); ctx.fill();
-    ctx.fillStyle = '#5fc24a';
-    for (let gx = x+8; gx < x+p.w-6; gx += 14) { ctx.beginPath(); ctx.moveTo(gx, sy-2); ctx.lineTo(gx+4, sy-11); ctx.lineTo(gx+8, sy-2); ctx.fill(); }
+    // soft contact shadow on the ground
+    ctx.fillStyle = 'rgba(0,0,0,0.13)';
+    ctx.beginPath(); ctx.ellipse(p.x, sy + dirtH + 9, w*0.52, 7, 0, 0, 7); ctx.fill();
+    // dirt body — vertical gradient for a rounded 3D block
+    const dg = ctx.createLinearGradient(0, sy, 0, sy + dirtH + 8);
+    dg.addColorStop(0,'#c08a4e'); dg.addColorStop(0.55,'#9c6c37'); dg.addColorStop(1,'#79501f');
+    ctx.fillStyle = dg; ctx.beginPath(); ctx.roundRect(x, sy, w, dirtH + 8, 11); ctx.fill();
+    // cylinder side shading (darker left/right edges)
+    const sg = ctx.createLinearGradient(x, 0, x + w, 0);
+    sg.addColorStop(0,'rgba(60,35,10,0.40)'); sg.addColorStop(0.16,'rgba(0,0,0,0)');
+    sg.addColorStop(0.84,'rgba(0,0,0,0)'); sg.addColorStop(1,'rgba(60,35,10,0.45)');
+    ctx.fillStyle = sg; ctx.beginPath(); ctx.roundRect(x, sy, w, dirtH + 8, 11); ctx.fill();
+    // a couple of pebbles on wider ledges
+    if (w > 90) { ctx.fillStyle = 'rgba(60,40,18,0.30)';
+      ctx.beginPath(); ctx.arc(x+w*0.32, sy+dirtH*0.7, 2.4, 0, 7); ctx.arc(x+w*0.62, sy+dirtH*0.5, 1.8, 0, 7); ctx.fill(); }
+    // grass cap — overhangs the dirt on all sides, rounded
+    const gx = x - 5, gw = w + 10, gtop = sy - 13, gh = 21;
+    const gg = ctx.createLinearGradient(0, gtop, 0, gtop + gh);
+    gg.addColorStop(0,'#8fe673'); gg.addColorStop(0.5,'#5fc64a'); gg.addColorStop(1,'#44a534');
+    ctx.fillStyle = gg; ctx.beginPath(); ctx.roundRect(gx, gtop, gw, gh, 11); ctx.fill();
+    // drooping grass lip (rounded bumps hanging under the cap)
+    ctx.fillStyle = '#44a534'; const bR = 7;
+    for (let bx = gx + bR; bx <= gx + gw - bR + 0.5; bx += bR*2) {
+      ctx.beginPath(); ctx.arc(bx, gtop + gh - 1, bR, 0, Math.PI); ctx.fill();
+    }
+    // glossy highlight strip on the grass
+    ctx.fillStyle = 'rgba(255,255,255,0.32)';
+    ctx.beginPath(); ctx.roundRect(gx + 6, gtop + 2.5, gw - 12, 5, 3); ctx.fill();
   }
   function drawCastle(cx, sy) {
     const cy = sy - 6;
@@ -332,9 +371,12 @@
     const sy = r.y - camTop; if (sy < -30 || sy > H+30) return;
     ctx.save(); ctx.translate(r.x, sy);
     const wob = Math.cos(performance.now()*0.004 + r.x);
-    ctx.scale(0.55 + 0.45*Math.abs(wob), 1);
-    ctx.lineWidth = 6; ctx.strokeStyle = '#e0a92a'; ctx.beginPath(); ctx.arc(0,0,13,0,7); ctx.stroke();
-    ctx.lineWidth = 6; ctx.strokeStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(0,0,13,Math.PI*1.0,Math.PI*1.7); ctx.stroke();
+    ctx.scale(0.42 + 0.58*Math.abs(wob), 1);                  // spins like a coin
+    const rg = ctx.createLinearGradient(0,-13,0,13);
+    rg.addColorStop(0,'#fff1ab'); rg.addColorStop(0.4,'#ffd23f'); rg.addColorStop(0.72,'#e0a92a'); rg.addColorStop(1,'#b6841d');
+    ctx.lineWidth = 7; ctx.strokeStyle = rg; ctx.beginPath(); ctx.arc(0,0,12,0,7); ctx.stroke();
+    ctx.lineWidth = 2.4; ctx.strokeStyle = 'rgba(255,255,255,0.85)';   // glossy glint
+    ctx.beginPath(); ctx.arc(0,0,12, Math.PI*1.05, Math.PI*1.5); ctx.stroke();
     ctx.restore();
   }
   function drawSparks() {
@@ -358,22 +400,43 @@
     }
     ctx.scale(dino.face * (1 - sq*0.12), 1 + sq*0.18);
     ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.beginPath(); ctx.ellipse(0, FOOT-2, 16, 5, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = '#3fae3f';
+    // tail
+    ctx.fillStyle = '#36a236';
     ctx.beginPath(); ctx.moveTo(-6,6); ctx.quadraticCurveTo(-24,8,-20,-6); ctx.quadraticCurveTo(-14,2,-6,-2); ctx.fill();
-    ctx.fillStyle = '#ef8a2b';
+    // shoes (shaded)
+    const sh = ctx.createLinearGradient(0, FOOT-9, 0, FOOT+1);
+    sh.addColorStop(0,'#ffae5c'); sh.addColorStop(1,'#e07d22'); ctx.fillStyle = sh;
     ctx.beginPath(); ctx.ellipse(-7, FOOT-4, 8, 5, 0, 0, 7); ctx.fill();
     ctx.beginPath(); ctx.ellipse(8, FOOT-4, 8, 5, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = '#46be46'; ctx.beginPath(); ctx.ellipse(0, 6, 15, 17, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = '#fdf6e3'; ctx.beginPath(); ctx.ellipse(2, 9, 9, 12, 0, 0, 7); ctx.fill();
+    // body (radial 3D shading)
+    const bg = ctx.createRadialGradient(-5,-1,3, 0,8,22);
+    bg.addColorStop(0,'#8ad97a'); bg.addColorStop(0.55,'#4fbf46'); bg.addColorStop(1,'#319a2e');
+    ctx.fillStyle = bg; ctx.beginPath(); ctx.ellipse(0, 6, 15, 17, 0, 0, 7); ctx.fill();
+    // belly
+    const be = ctx.createLinearGradient(0,-3,0,21);
+    be.addColorStop(0,'#fffdf2'); be.addColorStop(1,'#f0e4c2');
+    ctx.fillStyle = be; ctx.beginPath(); ctx.ellipse(2, 9, 9, 12, 0, 0, 7); ctx.fill();
+    // back spikes
     ctx.fillStyle = '#e0584f';
     for (let i=0;i<3;i++){ ctx.beginPath(); ctx.moveTo(-12+i*2, -2+i*7); ctx.lineTo(-19, 1+i*7); ctx.lineTo(-12+i*2, 5+i*7); ctx.fill(); }
+    // arm
     ctx.fillStyle = '#3fae3f'; ctx.beginPath(); ctx.ellipse(9, 6, 5, 7, 0.5, 0, 7); ctx.fill();
-    ctx.fillStyle = '#46be46'; ctx.beginPath(); ctx.arc(4, -12, 13, 0, 7); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(13, -8, 7, 5, 0, 0, 7); ctx.fill();
+    // head (radial 3D shading)
+    const hg = ctx.createRadialGradient(0,-16,3, 4,-12,15);
+    hg.addColorStop(0,'#8ad97a'); hg.addColorStop(0.6,'#4fbf46'); hg.addColorStop(1,'#319a2e');
+    ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(4, -12, 13, 0, 7); ctx.fill();
+    // snout
+    ctx.fillStyle = '#5fc24a'; ctx.beginPath(); ctx.ellipse(13, -8, 7, 5, 0, 0, 7); ctx.fill();
     ctx.fillStyle = '#2f8f2f'; ctx.beginPath(); ctx.arc(16, -8, 1.4, 0, 7); ctx.fill();
+    // eye
     ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(6, -16, 5, 6, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = '#1b1b1b'; ctx.beginPath(); ctx.arc(8, -16, 2.4, 0, 7); ctx.fill();
+    ctx.fillStyle = '#1b1b1b'; ctx.beginPath(); ctx.arc(8, -16, 2.6, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(9, -17.4, 1, 0, 7); ctx.fill();      // eye glint
+    // head fin
     ctx.fillStyle = '#e0584f'; ctx.beginPath(); ctx.moveTo(-4,-22); ctx.quadraticCurveTo(2,-34,8,-22); ctx.fill();
+    // soft body gloss
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.beginPath(); ctx.ellipse(-5, -1, 5, 8, -0.5, 0, 7); ctx.fill();
     ctx.restore();
   }
   function dangerVignette() {
@@ -392,6 +455,7 @@
     ctx.save();
     if (shake > 0.4) ctx.translate((Math.random()-.5)*shake, (Math.random()-.5)*shake);
     sky();
+    farScenery();
     if (bgReady) { ctx.save(); ctx.globalAlpha = 0.18; const s = W/bgImg.naturalWidth; ctx.drawImage(bgImg, 0, H - bgImg.naturalHeight*s, W, bgImg.naturalHeight*s); ctx.restore(); }
     drawClouds();
     for (const p of plats) platform(p);
